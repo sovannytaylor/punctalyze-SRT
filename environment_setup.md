@@ -8,5 +8,6 @@ conda install conda-forge::numpy pandas scikit-image scipy loguru
 python -m pip install cellpose --upgrade
 conda install conda-forge::napari matplotlib-scalebar
 conda install conda-forge::seaborn statannotations
-pip install bioio bioio-ome-tiff bioio-ome-zarr bioio-czi
+pip install bioio bioio-ome-tiff bioio-ome-zarr bioio-czi bioio-nd2
+conda install numpy=1.26 # later had to run this due to numpy issues
 ```
