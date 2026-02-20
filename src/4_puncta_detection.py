@@ -353,47 +353,49 @@ def get_surviving_puncta_labels_for_image(puncta_img, mask_labels):
             next_id += 1
 
     return out
+
 def generate_proofs(df, image_dict):
+    """
+    Proofs:
+      LEFT  = coi1 (puncta channel, gray) with coi2 (other channel, blue) overlay
+      RIGHT = coi1 masked to quant region + region outlines (black) + surviving puncta (red outlines)
+    """
     logger.info('Generating proof plots...')
     for name, img in image_dict.items():
 
-        # unpack from your filtered dict/stack format
-        # If image_dict stores np.stack([coi2, coi1, mask]) like your code:
+        # image_dict values are np.stack([coi2, coi1, mask]) per your filter_saturated_images()
         coi2, coi1, mask = img
 
-        # Pull ONE set of region contours from df (you saved per-row, so take first)
-        contour_series = df.loc[df['image_name'] == name, 'cell_coords']
-        if contour_series.empty:
-            continue
-        contour = contour_series.iloc[0]
-
-        # image for right panel: puncta channel only inside region
+        # right panel shows puncta channel only inside region
         region_img = coi1 * (mask > 0)
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
 
-        # LEFT: overlay (puncta channel in gray, other channel in blue)
-        ax1.imshow(coi1, cmap='gray_r')
-        ax1.imshow(coi2, cmap='Blues', alpha=0.6)
+        # --- LEFT: overlay channels ---
+        ax1.imshow(coi1, cmap='gray_r')                 # puncta channel (COI_1)
+        ax1.imshow(coi2, cmap='Blues', alpha=0.6)       # other channel (COI_2)
 
-        # RIGHT: region + outlines
+        # --- RIGHT: detection space (mask) + outlines ---
         ax2.imshow(region_img, cmap='gray_r')
-        for line in contour:
+
+        # Draw region outlines directly from mask (more reliable than df['cell_coords'])
+        contours = measure.find_contours((mask > 0).astype(int), 0.8)
+        contours = [c for c in contours if len(c) >= 100]
+        for line in contours:
             ax2.plot(line[:, 1], line[:, 0], c='k', lw=0.5)
 
-        # --- SURVIVORS overlay (post-filter) ---
+        # --- SURVIVORS overlay (post-filter puncta) ---
+        n_survive = None
         if SHOW_SURVIVORS_ONLY:
             survivors = get_surviving_puncta_labels_for_image(coi1, mask)
 
-            # draw red outlines for surviving puncta
+            # red outlines for surviving puncta
             for c in measure.find_contours((survivors > 0).astype(float), 0.5):
                 ax2.plot(c[:, 1], c[:, 0], color='red', lw=1.0)
 
             n_survive = (np.unique(survivors).size - 1)
-        else:
-            n_survive = None
 
-        # scalebar + labels on LEFT panel
+        # --- scalebar + labels on LEFT ---
         scalebar = ScaleBar(
             SCALE_PX, SCALE_UNIT, location='lower right',
             pad=0.3, sep=2, box_alpha=0, color='gray',
@@ -403,7 +405,7 @@ def generate_proofs(df, image_dict):
         ax1.text(50, 2000, COI_1_name, color='gray')
         ax1.text(50, 1800, COI_2_name, color='steelblue')
 
-        # title
+        # --- title ---
         if n_survive is not None:
             fig.suptitle(f'{name} | survivors: {n_survive}', y=0.88)
         else:
@@ -414,7 +416,6 @@ def generate_proofs(df, image_dict):
         plt.close(fig)
 
     logger.info('proofs saved.')
-
 
 if __name__ == '__main__':
     logger.info('loading images and masks...')
@@ -437,7 +438,7 @@ if __name__ == '__main__':
     features = extra_puncta_features(features)
 
     # --- generate proofs ---
-    generate_proofs(features, filtered, coi1=COI_1, coi2=COI_2)
+    generate_proofs(features, filtered)
     logger.info('proofs complete.')
 
     # --- data wrangling ---
