@@ -34,7 +34,7 @@ plt.rcParams.update({'font.size': 14})
 sns.set_palette('Paired')
 
 # --- configuration ---
-STD_THRESHOLD = 3.8
+STD_THRESHOLD = 3.8 # number of standard deviations above the mean to set as threshold for puncta detection, adjust based on expected signal-to-noise in your images
 SAT_FRAC_CUTOFF = 0.01  # for consistency with remove_saturated_cells
 COI_1 = 1  # channel of interest for saturation check (e.g., 1 for channel 2)
 COI_2 = 0  # secondary channel of interest for comparisons
@@ -122,7 +122,7 @@ def filter_saturated_images(images, cytoplasm_masks, masks):
             mask_stack=masks[name],
             COI=COI_1
         )
-        filtered[name] = np.stack([stack[COI_2], stack[COI_1], cells])
+        filtered[name] = np.stack([img[COI_2], img[COI_1], cells])
     logger.info('saturated cells filtered.')
     return filtered
 
