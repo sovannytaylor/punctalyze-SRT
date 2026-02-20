@@ -48,6 +48,7 @@ MIN_CIRCULARITY = 0.55 # 1.0 = perfect circle
 MAX_ECCENTRICITY = 0.9 # 0 = circle; 1 = line
 MIN_SOLIDITY = 0.7 #1 = solid; lower = ragged/fragmented 
 MIN_ASPECT_RATIO = 0.45   #minor/major; 1 is circle
+SHOW_SURVIVORS_ONLY = True #proofs show puncta masks after filtering
 
 # --- quantification region ---
 # options: "cell", "nucleus"
@@ -287,41 +288,131 @@ def aggregate_features_by_group(df, group_cols, agg_cols, agg_func='mean'):
 
 
 # --- Proof Plotting ---
-def generate_proofs(df, image_dict, coi1=COI_1_name, coi2=COI_2_name):
-    logger.info('Generating proof plots...')
-    for name, img in image_dict.items():
-        contour = df.loc[df['image_name']==name, 'cell_coords']
-        coord_list = df.loc[df['image_name']==name, 'puncta_coords']
 
-        if contour.empty:
+def get_surviving_puncta_labels_for_image(puncta_img, mask_labels):
+    """
+    Returns a labeled puncta mask for the whole image AFTER size+shape filtering,
+    computed per object in mask_labels (each nucleus/cell).
+    """
+    out = np.zeros_like(puncta_img, dtype=int)
+    next_id = 1
+
+    for lbl in np.unique(mask_labels):
+        if lbl == 0:
             continue
 
-        coi2, coi1, mask = img
-        cell_img = coi1 * (mask > 0)
+        region = (mask_labels == lbl)
+        vals = puncta_img[region]
+        if vals.size == 0:
+            continue
 
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,6))
+        mean_v = vals.mean()
+        std_v = vals.std()
+        thr = mean_v + STD_THRESHOLD * std_v
+
+        binary = (puncta_img > thr) & region
+        plab = morphology.label(binary)
+        plab = remove_small_objects(plab, min_size=MIN_PUNCTA_SIZE)
+
+        df_p = feature_extractor(plab).add_prefix("puncta_")
+        if df_p.empty:
+            continue
+
+        # size filter
+        size_keep = (
+            (df_p["puncta_area"] >= MIN_PUNCTA_SIZE) &
+            (df_p["puncta_area"] <= MAX_PUNCTA_SIZE)
+        )
+        kept = df_p.loc[size_keep, "puncta_label"].astype(int).to_numpy()
+        plab = np.where(np.isin(plab, kept), plab, 0)
+        plab = morphology.label(plab > 0)
+
+        df_p = feature_extractor(plab).add_prefix("puncta_")
+        if df_p.empty:
+            continue
+
+        # shape filter
+        df_p["puncta_circularity"] = (4 * np.pi * df_p["puncta_area"]) / (df_p["puncta_perimeter"]**2 + 1e-9)
+        df_p["puncta_aspect_ratio"] = df_p["puncta_minor_axis_length"] / (df_p["puncta_major_axis_length"] + 1e-9)
+
+        shape_keep = (
+            (df_p["puncta_circularity"] >= MIN_CIRCULARITY) &
+            (df_p["puncta_eccentricity"] <= MAX_ECCENTRICITY) &
+            (df_p["puncta_solidity"] >= MIN_SOLIDITY) &
+            (df_p["puncta_aspect_ratio"] >= MIN_ASPECT_RATIO)
+        )
+        kept = df_p.loc[shape_keep, "puncta_label"].astype(int).to_numpy()
+        plab = np.where(np.isin(plab, kept), plab, 0)
+        plab = morphology.label(plab > 0)
+
+        # merge into image-level labels (ensure unique IDs)
+        for k in np.unique(plab):
+            if k == 0:
+                continue
+            out[plab == k] = next_id
+            next_id += 1
+
+    return out
+def generate_proofs(df, image_dict):
+    logger.info('Generating proof plots...')
+    for name, img in image_dict.items():
+
+        # unpack from your filtered dict/stack format
+        # If image_dict stores np.stack([coi2, coi1, mask]) like your code:
+        coi2, coi1, mask = img
+
+        # Pull ONE set of region contours from df (you saved per-row, so take first)
+        contour_series = df.loc[df['image_name'] == name, 'cell_coords']
+        if contour_series.empty:
+            continue
+        contour = contour_series.iloc[0]
+
+        # image for right panel: puncta channel only inside region
+        region_img = coi1 * (mask > 0)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 6))
+
+        # LEFT: overlay (puncta channel in gray, other channel in blue)
         ax1.imshow(coi1, cmap='gray_r')
         ax1.imshow(coi2, cmap='Blues', alpha=0.6)
 
-        ax2.imshow(cell_img, cmap='gray_r')
-        for line in contour.iloc[0]:
-            ax2.plot(line[:,1], line[:,0], c='k', lw=0.5)
+        # RIGHT: region + outlines
+        ax2.imshow(region_img, cmap='gray_r')
+        for line in contour:
+            ax2.plot(line[:, 1], line[:, 0], c='k', lw=0.5)
 
-        if len(coord_list) > 1:
-            for puncta in coord_list:
-                if isinstance(puncta, np.ndarray):
-                    ax2.plot(puncta[:,1], puncta[:,0], lw=0.5)
+        # --- SURVIVORS overlay (post-filter) ---
+        if SHOW_SURVIVORS_ONLY:
+            survivors = get_surviving_puncta_labels_for_image(coi1, mask)
 
-        scalebar = ScaleBar(SCALE_PX, SCALE_UNIT, location='lower right',
-                            pad=0.3, sep=2, box_alpha=0, color='gray',
-                            length_fraction=0.3)
+            # draw red outlines for surviving puncta
+            for c in measure.find_contours((survivors > 0).astype(float), 0.5):
+                ax2.plot(c[:, 1], c[:, 0], color='red', lw=1.0)
+
+            n_survive = (np.unique(survivors).size - 1)
+        else:
+            n_survive = None
+
+        # scalebar + labels on LEFT panel
+        scalebar = ScaleBar(
+            SCALE_PX, SCALE_UNIT, location='lower right',
+            pad=0.3, sep=2, box_alpha=0, color='gray',
+            length_fraction=0.3
+        )
         ax1.add_artist(scalebar)
         ax1.text(50, 2000, COI_1_name, color='gray')
         ax1.text(50, 1800, COI_2_name, color='steelblue')
-        fig.suptitle(name, y=0.88)
+
+        # title
+        if n_survive is not None:
+            fig.suptitle(f'{name} | survivors: {n_survive}', y=0.88)
+        else:
+            fig.suptitle(name, y=0.88)
+
         fig.tight_layout()
         fig.savefig(f'{proofs_folder}{name}_proof.png', dpi=300, bbox_inches='tight')
         plt.close(fig)
+
     logger.info('proofs saved.')
 
 
